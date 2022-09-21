@@ -1,0 +1,494 @@
+---
+title: ' RNAseq Analysis'
+author: "Hernan Lorenzi"
+date: "9/20/2022"
+output:
+  html_document:
+    df_print: paged
+---
+
+# Load libraries
+```{r load libraries}
+suppressMessages(library("org.Mm.eg.db"))
+suppressMessages(library("pheatmap"))
+suppressMessages(library("EnhancedVolcano"))
+suppressMessages(library("ggplot2"))
+suppressMessages(library("ggpubr"))
+suppressMessages(library("DESeq2"))
+suppressMessages(library("stringr"))
+suppressMessages(library("biomaRt"))
+suppressMessages(library("tidyverse"))
+suppressMessages(library("pcaExplorer"))
+suppressMessages(library("VennDiagram"))
+suppressMessages(library("clusterProfiler"))
+suppressMessages(library("GOSemSim"))
+suppressMessages(library("ggsci"))
+suppressMessages(library("viridis"))
+suppressMessages(library("ggrepel"))
+suppressMessages(library("RColorBrewer"))
+suppressMessages(library("msigdbr"))
+suppressMessages(library("cowplot"))
+suppressMessages(library("enrichplot"))
+suppressMessages(library("ReactomePA"))
+suppressMessages(library("ggupset"))
+suppressMessages(library("broom"))
+suppressMessages(library("ggraph"))
+```
+
+# Define functions
+```{r aux functions}
+
+# Load auxyliary functions
+source(file = "./01_aux_rnaseq_functions.R")
+
+# Load enrichment functions
+source(file = "./02_Gene_enrichment_functions.R")
+
+```
+
+
+# Load data
+```{r Loading data}
+all <- read.delim2("./data/read_counts.txt", sep = "\t", header = TRUE, row.names = 1, comment.char = c("#") )
+
+# Make sure read counts are numeric and rounded to 0 decimals
+all.tmp <- as.data.frame(lapply(all, function(x){ round(as.numeric(x), digits = 0)} ))
+rownames(all.tmp) <- rownames(all)
+all <- all.tmp
+
+# Keep table with Ensemble IDs and gene Symbols
+gene_symbols <- replace_gene_acc_by_symbol_ids(rownames(all))
+ensembl_to_symbol <- as.data.frame(cbind("Ensembl_ID" = rownames(all), "gene_name" = gene_symbols), row.names = 1)
+
+# Load metadata
+metadata <- read.delim2("./data/Metadata.txt", sep = "\t", row.names = 1, header = T)
+
+# Sort tables so metadata and read counts match order
+metadata<-  metadata[match(colnames(all), rownames(metadata)), ]
+
+# Add total read counts and sample id columns to metadata
+metadata$Read_counts <- colSums(all)
+metadata$Sample_name <- rownames(metadata)
+
+#Remove all zero rows
+all <- remove_all_zero_rows(all, min_total_count = 0)
+
+```
+
+# Normalize data to TPMs to run some comparative analysis across samples
+```{r}
+# Using annotation version GRCm39 (current)
+all.tpm <- normalize_by_TPM(all)
+```
+
+###########################################
+# Analysis of expression data using DESeq2
+###########################################
+
+```{r deseq2}
+# Convert metadata to factors
+for (variable in c("Tissue", "Genotype","Sex")){
+  metadata[,variable] <- as.factor(metadata[,variable])  
+}
+
+```
+
+# Analysis of Heart and Liver Datasets
+
+```{r Dataset one}
+# Generate DESeq2 object for NS and ST condition ONLY. We could potentially add Read_counts as either a covariate or as a factor (by grouping Read counts into Low and High count bins). Ideally, this should be done adding Read_counts as a random effect using mixed models, that can only be applied in Limma package. Addind it as a fixed effect in the fdesign formula might lower the power of the analysis.  
+#dds.all <- DESeqDataSetFromMatrix(countData = all_one, 
+#                              colData = meta_one,  
+#                              design = ~ Genotype + Inducer + Genotype:Inducer)
+
+dir.create(path = "./Plots", showWarnings = FALSE)
+
+# Create DESeq object
+dds.all <- DESeqDataSetFromMatrix(countData = all, 
+                              colData = metadata,  
+                              design = ~ Sex + Genotype)
+
+# Plot total reads per sample using barchar
+p <- ggbarplot(data = metadata, 
+          x = "Sample_name", 
+          y = "Read_counts",
+          x.text.angle = 90,
+          fill = "Genotype", 
+          title = "Total read counts", 
+          ylab = "Read counts",
+          sort.by.groups = TRUE,
+          palette = "jco",
+          sort.val = "asc") 
+ggsave("Plots/barplot_read_counts.pdf", plot = p)
+print(p)
+```
+
+
+```{r}
+# Normalize counts
+vsd.one <- vst(dds.all, blind=FALSE)
+rlog.one <- rlog(dds.all, blind=FALSE)
+
+# Keep genes with at least 10 reads total across samples
+keep <- rowSums(counts(dds.all)) >= 20
+dds.all <- dds.all[keep,]
+
+# Calculate distances between samples
+sampleDists <- dist(t(assay(vsd.one)))
+
+# Plot inter-sample distances
+old.par <- par(no.readonly=T)
+
+sampleDistMatrix <- as.matrix(sampleDists)
+rownames(sampleDistMatrix) <- paste(rlog.one$Sample_name, rlog.one$Genotype, rlog.one$Sex, sep="-")
+colnames(sampleDistMatrix) <- NULL
+colors <- colorRampPalette( rev(brewer.pal(9, "Blues")) )(255)
+p.pheatmap <- pheatmap(sampleDistMatrix,
+         clustering_distance_rows=sampleDists,
+         clustering_distance_cols=sampleDists,
+         col=colors)
+
+ggsave2(filename = "unsupervised_clustering_rnaseq_profile_20plus_reads.pdf", plot = p.pheatmap, path = "./Plots")
+print(p.pheatmap)
+```
+Samples separates mainly by tissue type. Within tissues, males (e3 and e7) seem to cluster separated from female samples. Male e3 cluster separated from all the samples within tissues. That effect is stronger in liver, where e3 sample has the fewest number of reads compared to the rest of samples.
+
+
+```{r}
+
+# Split samples by tissue type
+dds_res <- list()
+
+dds_res['heart'] <- dds.all[ , dds.all$Tissue=="heart"]
+dds_res[['heart']]$Tissue <- droplevels(dds_res[['heart']]$Tissue)
+
+dds_res['liver'] <- dds.all[ , dds.all$Tissue=="liver"]
+dds_res[['liver']]$Tissue <- droplevels(dds_res[['liver']]$Tissue)
+
+rlog_res <- list()
+rlog_res['heart'] <- rlog(dds_res[['heart']], blind=FALSE)
+rlog_res['liver'] <- rlog(dds_res[['liver']], blind=FALSE)
+
+# PCA
+for (my_tissue in names(rlog_res)){
+  rlog.one <- rlog_res[[my_tissue]]
+  pcaData <- plotPCA(rlog.one, intgroup=c("Genotype", "Sex"), returnData=TRUE)
+  percentVar <- round(100 * attr(pcaData, "percentVar"))
+  y.coords = c(min(pcaData$PC1, pcaData$PC2), max(pcaData$PC1, pcaData$PC2))
+  x.coords = y.coords
+  p1 <- ggplot(pcaData, aes(PC1, PC2, color=Genotype, shape=Sex)) +
+    geom_point(size=3) + scale_color_lancet() + 
+    xlab(paste0("PC1: ",percentVar[1],"% variance")) +
+    ylab(paste0("PC2: ",percentVar[2],"% variance")) + 
+    coord_fixed(ratio = (max(pcaData$PC1)-min(pcaData$PC1))/(max(pcaData$PC2)-min(pcaData$PC2))) +
+    labs(title = my_tissue) + theme_bw() + 
+    theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+  
+  ggsave(paste0("Plots/pca_",my_tissue,"sex_gt.pdf"), plot = p1)
+  print(p1)
+}
+
+```
+PCA analysis confirmed that samples separate by genotype and that females tend to cluster together, separated from male samples within genotypes.
+
+### resultsNames(dds)
+
+# Filtering out poorly-expressed genes (less than 20 reads across all samples) 
+```{r filtering genes based on total counts of reads}
+
+# Keep genes with at least 10 reads total across samples
+for (my_tissue in names(dds_res)){
+
+  keep <- rowSums(counts(dds_res[[my_tissue]])) >= 20
+  dds_res[[my_tissue]] <- dds_res[[my_tissue]][keep,]
+}
+```
+
+
+
+# Using groups instead of interactions
+```{r}
+
+# Save sorted files as a list
+DE_results <- list()
+geneids.DE <- list()
+
+# Define function for processing and saving result tables
+sort_and_write_res_table <- function(result_table, file_name){
+  dir.create(path = "./DE", showWarnings = FALSE)
+  # Sort genes by (padj)
+  result_table_sorted <- result_table[order(result_table$padj, decreasing = FALSE),]
+  # Add gene symbols
+  gene_list <- rownames(result_table_sorted)
+  symbol_list <- ensembl_to_symbol$gene_name[match(gene_list, ensembl_to_symbol$Ensembl_ID)]
+  df <-as.data.frame(cbind(result_table_sorted, Gene_name = symbol_list))
+  
+  # Write sorted table to file
+  write.table(df, file = paste0("./DE/",file_name,".txt"), 
+            sep = "\t", col.names=NA)
+  return(df)
+}
+
+# Calculate DE for Heart samples
+#design(dds.rnaseA) <- ~Treatment # Removid Read.depth from formula given that all samples are Read.depth = High
+for (my_tissue in names(dds_res)){
+  dds_res[[my_tissue]]$Genotype <- relevel(dds_res[[my_tissue]]$Genotype, "WT")
+  dds_res[[my_tissue]] <- DESeq(dds_res[[my_tissue]])
+  my_contrasts <- resultsNames(dds_res[[my_tissue]])
+  
+  
+  # Using lfcShrink instead of results to reduce high Log2FC bias of genes with low expression
+  res_genotype_KO_vs_WT <- lfcShrink(dds_res[[my_tissue]], coef = my_contrasts[3], type = "ashr", )
+  
+  summary(res_genotype_KO_vs_WT, alpha = 0.05)
+  
+  # Sort results by Log2FC
+  res_genotype_KO_vs_WT_sorted <- sort_and_write_res_table(result_table = res_genotype_KO_vs_WT, 
+                                                           file_name = paste0("DE_",my_tissue,"_KO_vs_WT")
+                                                           ) 
+  
+  # Save sorted files as a list
+  DE_results[[my_tissue]]  <- res_genotype_KO_vs_WT_sorted
+  
+  
+  # Save list of genes significantly DE as a list
+  geneids.DE[[my_tissue]] <- rownames(subset(res_genotype_KO_vs_WT_sorted, padj <= 0.05))
+  
+}
+```
+
+
+
+# Plot Venn Diagram with DE gene overlaps among treatments.
+```{r}
+VennDiagram::venn.diagram(x = geneids.DE, #list(geneids.rnaseA.DE, geneids.25A.DE),
+  category.names = names(geneids.DE), #c("RNaseA", "25A"),
+  filename = "./Plots/heart_vs_liver_venn.png",
+  imagetype = "png",
+  output=TRUE,
+  height = 480 , 
+  width = 480 , 
+  resolution = 300,
+  compression = "lzw",
+  lwd = 1,
+  col=c("#440154ff", '#21908dff'),
+  fill = c(alpha("#440154ff",0.3), alpha('#21908dff',0.3)),
+  cex = 0.5,
+  fontfamily = "sans",
+  cat.cex = 0.3,
+  cat.default.pos = "outer",
+  cat.pos = c(-27, 27),
+  cat.dist = c(0.055, 0.055),
+  cat.fontfamily = "sans"
+)
+```
+
+```{r heatmap}
+
+vsd_res <- list()
+int_group = c("Genotype","Sex","Tissue")
+
+# Select factors to be displayed together with the expression data
+for (my_tissue in names(dds_res)){
+  all.df <- as.data.frame(colData(dds_res[[my_tissue]])[,int_group])
+  rownames(all.df) <- rownames(as.data.frame(colData(dds_res[[my_tissue]])))
+  
+  vsd_res[my_tissue] <- vst(dds_res[[my_tissue]], blind=FALSE)
+  
+  # plot_heat_map
+  plot_heat_map(my_vstd = vsd_res[[my_tissue]], gene_list = unique(c(geneids.DE[[my_tissue]][1:50])), 
+                file_name = paste0("Plots/top50_DE_genes_",my_tissue,".pdf"), variables = all.df)
+}
+```
+
+Plot normalized (vst) gene expression per sample
+```{r Plot normalized (vst) gene expression per sample}
+
+# Plot genes with most up and down regulation with each inducer
+#int_group = c("Genotype","Sex")
+#for (my_tissue in names(geneids.DE)){
+#  genes_of_interest = unique(c(geneids.DE[[my_tissue]][1:30]))
+#  
+#  plot_normalized_gene_expression(my_dds = dds_res[[my_tissue]], 
+#                                  ensmbl_gene_list = genes_of_interest, 
+#                                  file_prefix = paste0("Genes_with_extreme_DE_",my_tissue),
+#                                  interest_groups = int_group)
+#}
+
+```
+
+```{r volcano plots}
+dir.create(path = "./PAPER", showWarnings = FALSE)
+
+# Print volcano plots for eahc condition
+for (my_tissue in names(DE_results)){
+  genes_of_interest = geneids.DE[[my_tissue]][1:20]
+  genes_of_interest_symbols <- ensembl_to_symbol$gene_name[ensembl_to_symbol$Ensembl_ID %in% genes_of_interest]
+  
+  generate_volcano_plot_with_ids(res.tmp = DE_results[[my_tissue]], 
+                                 my_file_name = paste0("res_genotype_KO_vs_WT_",my_tissue), 
+                                 gene_list = genes_of_interest_symbols)
+}
+
+
+```
+
+
+
+#################################
+## GO enrichment analysis
+#################################
+
+```{r GO enrichment}
+# The code below selects a list of gene IDs based on a specific Log2FC cutoff for running Overrepresentation analysis with the R function 'enricher'. The list of genes are stored in the variable "gene" for gene IDs = Ensembl gene IDs, and in the variable  'gene.entrezid' for a list of Entrez gene IDs. Usually, geneset databases use eithr Entrez gene IDs or gene symbols as identifiers, so in some cases it is handy to count with a list of genes using Entrez gene IDs. 
+
+#The same code also extract the entire list of genes used for the Differential Expression Analysis as an R list element, using Ensemble gene IDs as keys (names) and Log2FC as values. This geneList is used as input for running Gene Set Enrichment Analysis with the function 'GSEA'. If needed, the code below also generates the same geneList but using Entrez gene IDs as keys.
+
+go.class = list()
+go.overrep = list()
+go.gsea = list()
+
+for (i in names(DE_results)){
+ 
+  dir.create(path = paste0("./GO/", i), showWarnings = FALSE, recursive = TRUE)
+
+  for (ontho in c("BP", "MF", "CC")){ 
+    my_id = paste0(i,"_",ontho)
+    
+    print(paste("go_classification", i, ontho))
+    go.class[[my_id]] <- go_classification(dds_res = DE_results[[i]], 
+                             my_file = i, 
+                             onthology = ontho, alpha = 0.05)
+    
+    print(paste("go_overrep", i, ontho))
+    go.overrep[[my_id]] <- go_overrep(dds_res = DE_results[[i]], 
+                                   my_file = i, 
+                                   onthology = ontho, qvalue = 0.05)
+    
+    print(paste("go_gsea", i, ontho))
+    go.gsea[[my_id]] <- go_gsea(dds_res = DE_results[[i]], 
+                                   my_file = i, 
+                                   onthology = ontho, qvalue = 0.05)
+    
+    # Generate barplot for paper
+    PAPER_plot_gsea(gsea_result = go.gsea[[my_id]], 
+                    comparison_id = i, 
+                    analysis_type = paste0("GO_",ontho),
+                    my_x_label = paste0("Gene Ontology (", ontho, ")"),
+                    my_path = "./PAPER")
+
+    
+    p.simp_net_plot <- plot_simplified_network(enrichment_result = go.overrep[[my_id]], top_categories = 20)
+    ggsave2(filename = paste0(my_id,"_simplified_network.pdf"), plot = p.simp_net_plot, path = "./PAPER/", height = 11, width = 9)
+    
+  }
+}
+
+
+```
+
+
+###########################################
+## Gene enrichment analysis
+###########################################
+
+MSigDBs can be downloaded from R with the function msigdbr (see below). 
+
+```{r enrichment analysis with MSigDB}
+
+SKIP_GSEA_PLOTS = FALSE
+
+# You can modify the category and subcategory parameters below to retrieve specific gene sets from GSEA's MSIG database.
+for (i in names(DE_results)){
+  # Reset gene lists for each analysis
+  genes = c()
+  geneList = list()
+  
+  print(i)
+  # skip ko25A_vs_koNone results
+  if (dim(DE_results[[i]])[1] == 0){
+    print("skipped! The dds results table is empty.")
+    next
+  }
+  my_prefix <- i
+  
+  ## Gene list of interest (using Log2FC > 0.5 and FDR <= 0.05)
+  genes <- rownames(subset(DE_results[[i]], log2FoldChange > 0.5 & padj <= 0.05))
+  my_ordered_dds_res <- DE_results[[i]][order(DE_results[[i]]$log2FoldChange, decreasing = T, na.last = T), ]
+  geneList <- my_ordered_dds_res$log2FoldChange
+  names(geneList) <- rownames(my_ordered_dds_res)
+  
+  ########################################
+  ## H: hallmark gene sets
+  ########################################
+  # Fetch gene sets
+  msig_h <- msigdbr(species = "Mus musculus", category = "H") %>% dplyr::select(gs_name, ensembl_gene, ) 
+  
+  # Run overrepresentation analysis
+ run_overrepresentation_analysis(gene_set = msig_h, dds_res = DE_results[[i]], analysis_name = my_prefix, gs_name = "H", type = "general")
+  
+  # Run Gene Set Enrichment Analysis
+  gsea_result = run_enrichment_analysis(gene_set = msig_h, geneList = geneList, analysis_name = my_prefix, gs_name = "H", type = "general", no_plots = SKIP_GSEA_PLOTS)
+  
+  # Generate barplot for paper
+    PAPER_plot_gsea(gsea_result = gsea_result, 
+                    comparison_id = i, 
+                    analysis_type = paste0("HALLMARKS"),
+                    my_x_label = "Cellular Hallmarks",
+                    my_path = "./PAPER")
+    
+  ###########################################################################
+  ## C3 regulatory target gene sets => TFT: transcription factor targets
+  ###########################################################################
+  # Fetch gene sets
+  msig_c3_gtrd <- msigdbr(species = "Mus musculus", category = "C3", subcategory = "TFT:GTRD") %>% dplyr::select(gs_name, ensembl_gene, )
+  msig_c3_tft <- msigdbr(species = "Mus musculus", category = "C3", subcategory = "TFT:TFT_Legacy") %>% dplyr::select(gs_name, ensembl_gene, )
+  
+  # Run overrepresentation analysis
+  run_overrepresentation_analysis(gene_set = msig_c3_gtrd,  dds_res = DE_results[[i]], analysis_name = my_prefix, gs_name = "C3_TFT_GTRD", type = "general")
+  run_overrepresentation_analysis(gene_set = msig_c3_tft,  dds_res = DE_results[[i]], analysis_name = my_prefix, gs_name = "C3_TFT_Legacy", type = "general")
+  
+  # Run Gene Set Enrichment Analysis
+  gsea_result.gtrd <- run_enrichment_analysis(gene_set = msig_c3_gtrd, geneList = geneList, analysis_name = my_prefix, gs_name = "C3_TFT_GTRD", type = "general", no_plots = SKIP_GSEA_PLOTS)
+  gsea_result.tft <- run_enrichment_analysis(gene_set = msig_c3_tft, geneList = geneList, analysis_name = my_prefix, gs_name = "C3_TFT_Legacy", type = "general", no_plots = SKIP_GSEA_PLOTS)
+
+  # Generate barplot for paper
+    PAPER_plot_gsea(gsea_result = gsea_result.gtrd, 
+                    comparison_id = i, 
+                    analysis_type = paste0("C3_TFT_GTRD"),
+                    my_x_label = "Transcription Factors (GTRD DB)",
+                    my_path = "./PAPER")
+    
+    # Generate barplot for paper
+    PAPER_plot_gsea(gsea_result = gsea_result.tft, 
+                    comparison_id = i, 
+                    analysis_type = paste0("C3_TFT_Legacy"),
+                    my_x_label = "Transcription Factors (MSigDB)",
+                    my_path = "./PAPER")
+    
+  
+  ##########################################################
+  ## C2 curated gene sets => CP:REACTOME Canonical pathways
+  ##########################################################
+  # Fetch gene sets
+  msig_c2_reactome <- msigdbr(species = "Mus musculus", category = "C2", subcategory = "CP:REACTOME") %>% dplyr::select(gs_name, ensembl_gene, )
+  
+  # Run overrepresentation analysis
+  run_overrepresentation_analysis(gene_set = msig_c2_reactome,  dds_res = DE_results[[i]], analysis_name = i, gs_name = "C2_CP_REACTOME", type = "general") # using type = "general to avoid error in treeplot
+  
+  # Run Gene Set Enrichment Analysis
+  gsea_result.reactome <- run_enrichment_analysis(gene_set = msig_c2_reactome, geneList = geneList, analysis_name = my_prefix, gs_name = "C2_CP_REACTOME", type = "reactome", no_plots = SKIP_GSEA_PLOTS)
+  
+  # Generate barplot for paper
+    PAPER_plot_gsea(gsea_result = gsea_result.reactome, 
+                    comparison_id = i, 
+                    analysis_type = paste0("C2_CP_REACTOME"),
+                    my_x_label = "Reactome Pathways",
+                    my_path = "./PAPER")
+}
+```
+
+
+```{r}
+sessionInfo()
+```
