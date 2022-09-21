@@ -1,0 +1,25 @@
+# Metadata
+reference:
+    abundant_rna_file: NA
+    ensembl_ver: NA
+    ensembl_gtf: data/00ref/gencode.vM30.primary_assembly.annotation.gtf
+    genome_build: GRCm39 (M30)
+    genome_file: data/00ref/GRCm39.primary_assembly.genome.fa
+    star_index: 00ref
+    genome_source: GENCODE
+remove_duplicated_reads: false
+star_db:
+    sjdbOverhang: 50
+samples:
+    Sample_e10HeartOGAWTFemale:
+    Sample_e10LiverOGAWTFemale:
+    Sample_e2HeartOGAKOFemale:
+    Sample_e2LiverOGAKOFemale:
+    Sample_e3HeartOGAKOMale:
+    Sample_e3LiverOGAKOMale:
+    Sample_e5HeartOGAWTFemale:
+    Sample_e5LiverOGAWTFemale:
+    Sample_e6HeartOGAKOFemale:
+    Sample_e6LiverOGAKOFemale:
+    Sample_e7HeartOGAWTMale:
+    Sample_e7LiverOGAWTMale:
