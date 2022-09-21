@@ -1,0 +1,15 @@
+Status	results/04dedup/Sample_e10HeartOGAWTFemale.sorted.dedup.bam	results/04dedup/Sample_e10LiverOGAWTFemale.sorted.dedup.bam	results/04dedup/Sample_e2HeartOGAKOFemale.sorted.dedup.bam	results/04dedup/Sample_e2LiverOGAKOFemale.sorted.dedup.bam	results/04dedup/Sample_e3HeartOGAKOMale.sorted.dedup.bam	results/04dedup/Sample_e3LiverOGAKOMale.sorted.dedup.bam	results/04dedup/Sample_e5HeartOGAWTFemale.sorted.dedup.bam	results/04dedup/Sample_e5LiverOGAWTFemale.sorted.dedup.bam	results/04dedup/Sample_e6HeartOGAKOFemale.sorted.dedup.bam	results/04dedup/Sample_e6LiverOGAKOFemale.sorted.dedup.bam	results/04dedup/Sample_e7HeartOGAWTMale.sorted.dedup.bam	results/04dedup/Sample_e7LiverOGAWTMale.sorted.dedup.bam
+Assigned	24604404	30254667	31410059	25801624	27941155	13583001	35233398	18797026	23482796	25653767	31979324	24974064
+Unassigned_Unmapped	0	0	0	0	0	0	0	0	0	0	0	0
+Unassigned_Read_Type	0	0	0	0	0	0	0	0	0	0	0	0
+Unassigned_Singleton	0	0	0	0	0	0	0	0	0	0	0	0
+Unassigned_MappingQuality	0	0	0	0	0	0	0	0	0	0	0	0
+Unassigned_Chimera	0	0	0	0	0	0	0	0	0	0	0	0
+Unassigned_FragmentLength	0	0	0	0	0	0	0	0	0	0	0	0
+Unassigned_Duplicate	0	0	0	0	0	0	0	0	0	0	0	0
+Unassigned_MultiMapping	0	0	0	0	0	0	0	0	0	0	0	0
+Unassigned_Secondary	0	0	0	0	0	0	0	0	0	0	0	0
+Unassigned_NonSplit	0	0	0	0	0	0	0	0	0	0	0	0
+Unassigned_NoFeatures	1817005	3160049	2942767	1736349	1936150	15500745	2574784	2194745	1959431	1617893	2192171	1582438
+Unassigned_Overlapping_Length	0	0	0	0	0	0	0	0	0	0	0	0
+Unassigned_Ambiguity	0	0	0	0	0	0	0	0	0	0	0	0
