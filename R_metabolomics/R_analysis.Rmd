@@ -1,0 +1,168 @@
+---
+title: "Analysis of metabolomics data"
+output: html_notebook
+---
+
+# Load libraries
+```{r}
+library(omu)
+library(ggplot2)
+library(cowplot)
+```
+
+# Load data files
+```{r}
+metabolomics_count.df <- read_metabo(filepath = "data/metabolomics_counts.csv")
+metadata.df <- read.csv("data/metadata.csv")
+metabolome.df <- read.csv("./data/metabolome_metadata.txt", header = TRUE, sep = "\t")
+```
+
+# Assiging Hierarchical Class Data
+```{r}
+DF <- assign_hierarchy(count_data = metabolomics_count.df, keep_unknowns = TRUE, identifier = "KEGG")
+DF
+
+# Add metabolome info
+DF$Class <- metabolome.df$Class
+DF$Subclass_1 <- metabolome.df$Subclass_1
+```
+# Convert variables to factors
+```{r}
+metadata.df$Genotype <- as.factor(metadata.df$Genotype)
+metadata.df$Sex <- as.factor(metadata.df$Sex)
+```
+
+# PCA Plots
+```{r}
+dir.create(path = "./Plots", showWarnings = FALSE)
+
+# Transform counts data to log scale
+metabolomics_count.log.df <- transform_samples(count_data = metabolomics_count.df, log)
+
+# Run PCA using Genotype as the main factor
+PCA <- PCA_plot(count_data = metabolomics_count.log.df, metadata = metadata.df, variable = "Genotype", color = "Genotype", response_variable = "Metabolite", label = TRUE) + 
+  scale_shape() + theme_bw() + theme(panel.grid = element_blank()) + 
+  geom_point(aes(shape = metadata.df$Sex, color = metadata.df$Genotype, size = 4)) + 
+  scale_color_brewer(palette="Dark2")
+
+ggsave2(filename = "PCA_genotype_vs_sex.pdf", path = "./Plots", plot = PCA)
+print(PCA)
+
+```
+Samples cluster mainly by Genotype and then by Sex
+
+# Run t-test analysis
+```{r}
+# Remove metabolites with SD too low across samples
+my.sd <- apply(metabolomics_count.df[3:ncol(metabolomics_count.df)], 1, function(x) sd(x))
+DF.sd0.2.df <- DF[my.sd >= 0.1,]
+
+# Run t-test
+DF_stats <- omu_summary(count_data = DF.sd0.2.df, 
+                        metadata = metadata.df, 
+                        numerator = "KO", 
+                        denominator = "WT", 
+                        response_variable = "Metabolite", 
+                        Factor = "Genotype", 
+                        log_transform = FALSE, 
+                        p_adjust = "BH", 
+                        test_type = "welch"
+                        )
+
+# Keep significant rows (padj <= 0.05)
+DF_stats.sig <- subset(DF_stats, padj <= 0.05)
+DF_stats.sig
+```
+
+# Run ANOVA test on Metabolites
+```{r}
+DF_anova.list <- omu_anova(count_data = DF, #metabolomics_count.df, 
+                      metadata = metadata.df, 
+                      response_variable = "Metabolite",
+                      model = ~ Sex * Genotype)
+
+DF_anova.list
+```
+
+# Save ANOVA results
+```{r}
+dir.create(path = "./Tables", showWarnings = FALSE)
+for (name in names(DF_anova.list)){
+  write.table(x = DF_anova.list[name], file = paste0("./Tables/",name,"_ANOVA.txt"), sep = "\t", col.names = NA)
+  
+}
+```
+
+# Get orthologies from KEGGdb
+```{r}
+table(DF_stats.sig$Class)
+
+# Subset DF_stats to get only significant Organic acids
+DF_stats.pep <- subset(DF_stats, padj <= 0.05 & Class=="Amino Acid")
+DF_stats.pep
+
+# Get the functional orthologies
+DF_stats.pep_KO <- KEGG_gather(DF_stats.pep)
+DF_stats.pep_KO
+
+DF_stats.KO <- KEGG_gather(DF_stats)
+DF_stats.KO
+
+write.csv(x = DF_stats.KO, file = "./DE_t.test.csv")
+```
+
+
+# Generate plots from DE analysis
+```{r}
+DF_stats_counts <- count_fold_changes(count_data = DF_stats, column = "Subclass_1", sig_threshold = 0.05, keep_unknowns = TRUE)
+
+Class_Bar_Plot <- plot_bar(fc_data = DF_stats_counts, fill = c("dodgerblue2", "firebrick2"), outline_color = c("black", "black"), size = c(1,1)) + labs(x = "Subclass_1") + theme(panel.grid = element_blank())
+
+ggsave2(filename = "blarplot_subclass_1.pdf", plot = Class_Bar_Plot, path = "./Plots", width = 15)
+Class_Bar_Plot
+```
+
+# Pie Charts
+```{r}
+DF_ra <- ra_table(fc_data = DF_stats_counts, variable = "Subclass_1")
+Pie_Chart <- pie_chart(ratio_data = DF_ra, variable = "Subclass_1", column = "Decrease", color = "black")
+Pie_Chart
+ggsave2(filename = "PieC_KO_vs_WT.pdf", plot = Pie_Chart, path = "./Plots")
+```
+
+# Volcano plots
+```{r}
+Volcano_Plot <- plot_volcano(count_data = DF_stats.KO, 
+                             size = 2, 
+                             column = "Subclass_1", 
+                             strpattern = c("Tyrosine Metabolism", "Pentose Phosphate Pathway","Purine Metabolism, (Hypo)Xanthine/Inosine containing"), 
+                             fill = c("white","firebrick2","dodgerblue2", "green"), 
+                             color = c("black", "black", "black","black"), 
+                             alpha = c(1,1,1,1), shape = c(21,21,21,21)
+                             ) + 
+  theme_bw() + 
+  theme(panel.grid = element_blank())
+
+Volcano_Plot
+ggsave2(filename = "VP_KO_vs_WT.pdf", plot = Volcano_Plot, path = "./Plots")
+```
+
+# Plot heat maps
+```{r}
+heatmap_class <- plot_heatmap(count_data = subset(DF_stats, padj <= 0.05), 
+                              metadata = metadata.df, 
+                              Factor = "Genotype", 
+                              response_variable = "Metabolite", 
+                              log_transform = TRUE, 
+                              high_color = "goldenrod2", 
+                              low_color = "midnightblue", 
+                              aggregate_by = "Subclass_1"
+                              ) + 
+  theme(axis.text.x = element_text(angle = 30, hjust=1, vjust=1, size = 6), axis.text.y = element_text(size = 6))
+
+heatmap_class
+ggsave2(filename = "heatmap_KO_vs_WT.pdf", plot = heatmap_class, path = "./Plots")
+```
+
+
+
